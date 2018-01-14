@@ -1,0 +1,173 @@
+---
+title: "week3-practice-quiz"
+author: "Shaochen Huang"
+date: "1/7/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## PRACTICE QUIZ
+(OPTIONAL) Data analysis practice with immediate feedback (NEW! 10/18/2017) 
+
+### Questions to answer
+Your assignment is to study how income varies across college major categories. Specifically answer: “Is there an association between college major category and income?”
+
+```{r pq-input, eval=FALSE}
+install.packages("devtools")
+devtools::install_github("jhudsl/collegeIncome")
+devtools::install_github("jhudsl/matahari")
+```
+
+Now start the analysis
+```{r}
+library(collegeIncome)
+data(college)
+library(matahari)
+dance_start(value = FALSE, contents = FALSE)
+```
+
+### Data exploratoration 
+first we need to look at the data to get a basic sense of data
+```{r overview and transformation}
+library(dplyr)
+dim(college)
+names(college)
+summary(college)
+
+#some transfomrations
+college$major = factor(college$major)
+college$major_category = factor(college$major_category)
+
+#clean up, notice there are some missing values in the data, I think for this exercise, we should just remove them, let's first look at how bad is missing values
+completeRows = complete.cases(college)
+1- mean(completeRows)
+#we can see that only about 1% is missing some values, I think it is ok to remove these rows for this analysis
+college = college[completeRows,]
+#Now we can take a correlation matrix of the vars to remove any duplicate vars
+cor(select(college, -major_code, -major, -major_category))
+#We notice that perc_men and perc_women, perc_employed and perc_unemployed, perc_employed_fulltime and perc_employed_partime are almost perfectly correlated, (as they are just complimentary to each other), also total and sample size, are highly correlated. I think we can safety remove the duplicate vars, but still keep the highly correlated ones for later analysis 
+collegeSlim = select(college, -perc_men, -perc_unemployed, -perc_employed_parttime)
+```
+
+### Graphical observation
+First explore data set via graphical methods, for this analysis, ggplot2 will be extensively used. 
+
+```{r 2-d-var, cache=TRUE}
+library(GGally)
+#inspect relationship between vars of interest below
+ggpairs(select(collegeSlim, -major_code, -major, -major_category), 
+        title = "College data correlations")
+```
+
+**observations**
+* there are some skewness of data distributions 
+* there are still some strong corelation between vars
+These collinearity should be examined and adjusted carefully in further analysis. 
+
+### Regression analysis (full model)
+```{r fullModel}
+#we want to study how income varies across different categories, hence we keep intercept which is the baseline income of major category: Interdisciplinary
+collegeSlim$major_category = relevel(college$major_category, ref = "Interdisciplinary")
+row.names(collegeSlim) = 1:nrow(collegeSlim)
+
+fitFull = lm(median ~ .-rank-p25th-p75th-major_code-major, collegeSlim)
+summary(fitFull)
+```
+
+A few observations: 
+* overall fit is poor, R2 is only about 19% and overall F-test not significant
+* most features are insigificant, only Business major and employed_fulltime_yeararound are significant. 
+
+At this stage, we can reach the initial conclusion that only business major makes signficiant more income than other majors, and that perc_employed_fulltime_yearround is a good indicator of income level. Now let's examine this a bit more on this regression though. 
+
+
+### Outliers 
+After fitting full model, we can take a look at residual plots and study if there is any outlier
+```{r residual}
+library(car)
+par(mfrow = c(2,2))
+plot(fitFull)
+
+#notice that row 16, 61, 167, seems to be the outlier, in particular row 61
+cooks.distance(fitFull)[c(16, 61, 67)]/mean(cooks.distance(fitFull), na.rm = TRUE)
+#we can see that row 61 is 38 times average cook distance and worth more investigation
+outlier.test(fitFull)
+
+#Let's examine this record more carefully
+collegeSlim[61,]
+#we can now see that this major category: Miscellaneous Business & Medical Administration earns a lot more than other major categories: 110000 vs median of overall pop: 36200, it also has very low perc of women, Even though we discovered an outlier with high residual, we think this is still a valid data point and worth keeping in this data set. 
+
+#Though for understanding purpose, let's see what is the effect of removing this outlier
+fitWithoutOutlier = lm(median ~ .-rank-p25th-p75th-major_code-major, collegeSlim[-61,])
+summary(fitWithoutOutlier)
+
+#looks like there is no much improvement from origianl regression model, and we think the data point is valid, so keep this outlier 
+```
+
+
+### Multi-collinearity
+As observed earlier, we noticed that several vars seem to be correlated to each other, this also manifest itself in that most of the regression coefficients are not significant. 
+
+#### Mutilcollinearity detection
+
+We already looked at correlation matrix earlier, but let's now take a look at some more sophisticated measures. 
+
+**VIF**
+First we take a look at variance inflation factors of the regression coefficients. 
+
+```{r vif}
+#first let's limit our vars of interest
+collegePartial = select(collegeSlim, -major_code, -major)
+#first let's examine VIF on numeric vars 
+fitPartial = lm(median ~ .-rank-p25th-p75th, collegePartial)
+vif(fitPartial)
+#now we see that total, sample size, perc_college_job, perc_non_college_jobs all high VIFs and a quick review of their correlations shows strong correlation betweehn them
+cor(select(collegePartial, total, sample_size, perc_college_jobs, perc_non_college_jobs))
+
+#a sensible decision is to include only one of them in our model
+collegePartial = select(collegePartial, -total, -perc_non_college_jobs)
+fitNew = lm(median ~ .-rank-p25th-p75th, collegePartial)
+
+#VIF looks much better now 
+vif(fitNew)
+```
+
+
+**PCA**
+Then we use PCA to again investigate collinearity
+```{r conditionNumber}
+library(dplyr)
+#first we only look at numeric vars in the data
+corMatrix = cor(select(collegePartial, sample_size, perc_women, perc_employed, perc_employed_fulltime, perc_employed_fulltime_yearround, perc_college_jobs, perc_low_wage_jobs))
+eigen(corMatrix)$values
+kappa(corMatrix)
+#the condition is number does not look too bad now
+```
+
+
+###Conclusions
+```{r modelSelection}
+fitFull = lm(median ~ .-rank-p25th-p75th, collegePartial)
+summary(fitFull)
+
+summary(filter(collegePartial, major_category == 'Business'))
+
+summary(lm(median ~ major_category, collegePartial))
+
+```
+We can concluse that in terms of median income, most major categories do not differ much, except if your major is business major, which leads to $24,120 more than baseline major category: interdiscipline.
+
+Median income is also highly related to perc_employed_fulltime_yearround, which makes sense as well. 
+
+```{r}
+dance_save("~/Desktop/college_major_analysis.rds")
+```
+
+
+
+
+
+
